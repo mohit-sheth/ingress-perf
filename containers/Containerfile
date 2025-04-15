@@ -9,3 +9,5 @@ RUN dnf install -y iproute procps-ng
 RUN curl -sS -L https://github.com/tsenart/vegeta/releases/download/v${VEGETA_VERSION}/vegeta_${VEGETA_VERSION}_linux_amd64.tar.gz | tar xz -C /usr/bin/
 COPY --from=builder /wrk/wrk /usr/bin/wrk
 COPY json.lua json.lua
+COPY tls-edge.crt /tmp/tls-edge.crt
+COPY tls-reencrypt.crt /tmp/tls-reencrypt.crt

@@ -41,7 +41,7 @@ func runBenchmark(cfg config.Config, clusterMetadata tools.ClusterMetadata) ([]t
 	var benchmarkResult []tools.Result
 	var clientPods []corev1.Pod
 	var ep string
-	r, err := orClientSet.RouteV1().Routes(benchmarkNs).Get(context.TODO(), fmt.Sprintf("%s-%s", serverName, cfg.Termination), metav1.GetOptions{})
+	r, err := orClientSet.RouteV1().Routes(benchmarkNs).Get(context.TODO(), fmt.Sprintf("%s", cfg.Termination), metav1.GetOptions{})
 	if err != nil {
 		return benchmarkResult, err
 	}

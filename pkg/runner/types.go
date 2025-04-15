@@ -30,7 +30,7 @@ const (
 	benchmarkNs = "ingress-perf"
 	serverImage = "quay.io/cloud-bulldozer/nginx:latest"
 	serverName  = "nginx"
-	clientImage = "quay.io/cloud-bulldozer/ingress-perf:latest"
+	clientImage = "quay.io/msheth/ingress-perf:latest"
 	clientName  = "ingress-perf-client"
 )
 
@@ -185,7 +185,7 @@ var routes = []routev1.Route{
 	{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: benchmarkNs,
-			Name:      fmt.Sprintf("%s-edge", serverName),
+			Name:      fmt.Sprintf("edge"),
 		},
 		Spec: routev1.RouteSpec{
 			Port: &routev1.RoutePort{TargetPort: intstr.FromString("http")},
@@ -194,13 +194,16 @@ var routes = []routev1.Route{
 			},
 			TLS: &routev1.TLSConfig{
 				Termination: routev1.TLSTerminationEdge,
+				ExternalCertificate: &routev1.LocalObjectReference{
+				Name: "my-external-cert",
+				},
 			},
 		},
 	},
 	{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: benchmarkNs,
-			Name:      fmt.Sprintf("%s-reencrypt", serverName),
+			Name:      fmt.Sprintf("reenc"),
 		},
 		Spec: routev1.RouteSpec{
 			Port: &routev1.RoutePort{TargetPort: intstr.FromString("https")},
@@ -208,7 +211,10 @@ var routes = []routev1.Route{
 				Name: service.Name,
 			},
 			TLS: &routev1.TLSConfig{
-				Termination:              routev1.TLSTerminationReencrypt,
+				Termination: routev1.TLSTerminationReencrypt,
+                                ExternalCertificate: &routev1.LocalObjectReference{
+                                Name: "my-external-cert-reencrypt",
+                                },
 				DestinationCACertificate: "-----BEGIN CERTIFICATE-----\nMIIDbTCCAlWgAwIBAgIJAJR/jN0Oa+/rMA0GCSqGSIb3DQEBCwUAME0xCzAJBgNV\nBAYTAlVTMRMwEQYDVQQIDApDYWxpZm9ybmlhMQswCQYDVQQHDAJOWTEcMBoGA1UE\nCgwTRGVmYXVsdCBDb21wYW55IEx0ZDAeFw0xNzAxMjQwODExMDJaFw0yNzAxMjIw\nODExMDJaME0xCzAJBgNVBAYTAlVTMRMwEQYDVQQIDApDYWxpZm9ybmlhMQswCQYD\nVQQHDAJOWTEcMBoGA1UECgwTRGVmYXVsdCBDb21wYW55IEx0ZDCCASIwDQYJKoZI\nhvcNAQEBBQADggEPADCCAQoCggEBAMItGS9sSafyqBuOcQcQ5j7OQ0EwF9qOckhl\nfT8VzUbcOy8/L/w654MpLEa4O4Fiek3keE7SDWGVtGZWDvT9y1QUxPhkDWq1Y3rr\nyMelv1xRIyPVD7EEicga50flKe8CKd1U3D6iDQzq0uxZZ6I/VArXW/BZ4LfPauzN\n9EpCYyKq0fY7WRFIGouO9Wu800nxcHptzhLAgSpO97aaZ+V+jeM7n7fchRSNrpIR\nzPBl/lIBgCPJgkax0tcm4EIKIwlG+jXWc5mvV8sbT8rAv32HVuaP6NafyWXXP3H1\noBf2CQCcwuM0sM9ZeZ5JEDF/7x3eNtqSt1X9HjzVpQjiVBXY+E0CAwEAAaNQME4w\nHQYDVR0OBBYEFOXxMHAA1qaKWlP+gx8tKO2rQ81WMB8GA1UdIwQYMBaAFOXxMHAA\n1qaKWlP+gx8tKO2rQ81WMAwGA1UdEwQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEB\nAJAri7Pd0eSY/rvIIvAvjhDPvKt6gI5hJEUp+M3nWTWA/IhQFYutb9kkZGhbBeLj\nqneJa6XYKaCcUx6/N6Vvr3AFqVsbbubbejRpdpXldJC33QkwaWtTumudejxSon24\nW/ANN/3ILNJVMouspLRGkFfOYp3lq0oKAlNZ5G3YKsG0znAfqhAVtqCTG9RU24Or\nxzkEaCw8IY5N4wbjCS9FPLm7zpzdg/M3A/f/vrIoGdns62hzjzcp0QVTiWku74M8\nv7/XlUYYvXOvPQCCHgVjnAZlnjcxMTBbwtdwfxjAmdNTmFFpASnf0s3b287zQwVd\nIeSydalVtLm7rBRZ59/2DYo=\n-----END CERTIFICATE-----",
 			},
 		},
