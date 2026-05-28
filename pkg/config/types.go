@@ -16,6 +16,12 @@ package config
 
 import "time"
 
+const (
+	ServiceTypeNodePort    = "nodeport"
+	TerminationHTTP        = "http"
+	TerminationPassthrough = "passthrough"
+)
+
 var Cfg []Config
 
 type Config struct {
@@ -52,6 +58,8 @@ type Config struct {
 	Keepalive bool `yaml:"keepalive" json:"keepalive"`
 	// Use HTTP2 protocol, if possible
 	HTTP2 bool `yaml:"http2" json:"http2"`
+	// ServiceType defines the Kubernetes service type. Allowed values are "" (default, ClusterIP with Routes) and "nodeport"
+	ServiceType string `yaml:"serviceType" json:"serviceType"`
 }
 
 var PrometheusQueries = map[string]string{

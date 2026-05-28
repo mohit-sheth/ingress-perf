@@ -28,6 +28,7 @@ Ingress-perf configuration is defined in a YAML file, holding an array of the fo
 | `keepalive`      | `bool`           | Use HTTP keepalived connections                                                             | `true`        | `hloader`       |
 | `requestRate`    | `int`            | Number of requests per second                                                               | `0` (unlimited) | `hloader`     |
 | `http2`          | `bool`           | Use HTTP2 requests, when possible                                                           | `false`         | `hloader`     |
+| `serviceType`    | `string`         | Kubernetes service type. Allowed values are `""` (default, ClusterIP with Routes) and `nodeport`. | `""`      | `wrk`,`hloader` |
 
 ## Supported tools
 
@@ -89,6 +90,16 @@ It is expected that the gateway is already installed by using [gateway injection
 To enable the respective Service Mesh mode, pass the flag `--service-mesh=sidecar` or `--service-mesh=ambient`. When specified, `ingress-perf` will create its routes in the namespace specified by `--gw-ns` (default: `istio-system`), these routes point to the http2 port of the `istio-ingressgateway` service. 4 gateways and 1 virtualservice are created in the `ingress-perf` namespace.
 
 At the time of writing these lines only the `http` and `edge` terminations are supported.
+
+## NodePort
+
+Ingress-perf supports benchmarking through Kubernetes NodePort services, bypassing the ingress controller entirely. This measures the direct `node-ip:node-port → pod` data path.
+
+Set `serviceType: nodeport` in the benchmark configuration. Only `http` and `passthrough` terminations are supported. NodePort mode is incompatible with service mesh and gateway API modes.
+
+Each client pod is assigned a different worker node IP to target. When `concurrency` is greater than the number of worker nodes, multiple client pods will share the same node IP. When `concurrency` is less than the number of worker nodes, only a subset of nodes will receive traffic.
+
+See [examples/nodeport.yml](./examples/nodeport.yml) for a sample configuration.
 
 ## Gateway API
 
