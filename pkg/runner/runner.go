@@ -323,7 +323,14 @@ func (r *Runner) deployAssets() error {
 		service.Spec.Type = corev1.ServiceTypeClusterIP
 	}
 	_, err = clientSet.CoreV1().Services(benchmarkNs.Name).Create(context.TODO(), &service, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) {
+	if errors.IsAlreadyExists(err) {
+		if err := clientSet.CoreV1().Services(benchmarkNs.Name).Delete(context.TODO(), service.Name, metav1.DeleteOptions{}); err != nil {
+			return err
+		}
+		if _, err := clientSet.CoreV1().Services(benchmarkNs.Name).Create(context.TODO(), &service, metav1.CreateOptions{}); err != nil {
+			return err
+		}
+	} else if err != nil {
 		return err
 	}
 	if nodePort {
