@@ -95,7 +95,7 @@ At the time of writing these lines only the `http` and `edge` terminations are s
 
 Ingress-perf supports benchmarking through Kubernetes NodePort services, bypassing the ingress controller entirely. This measures the direct `node-ip:node-port → pod` data path.
 
-Set `serviceType: nodeport` in the benchmark configuration. Only `http` and `passthrough` terminations are supported. NodePort mode is incompatible with service mesh and gateway API modes.
+Set `serviceType: nodeport` in the benchmark configuration. Only `http` and `passthrough` (https) terminations are supported. NodePort mode is incompatible with service mesh and gateway API modes.
 
 Each client pod is assigned a different worker node IP to target. When `concurrency` is greater than the number of worker nodes, multiple client pods will share the same node IP. When `concurrency` is less than the number of worker nodes, only a subset of nodes will receive traffic.
 
