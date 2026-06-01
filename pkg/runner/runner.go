@@ -16,6 +16,7 @@ package runner
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"net"
 	"os"
@@ -30,6 +31,7 @@ import (
 	"github.com/cloud-bulldozer/ingress-perf/pkg/runner/tools"
 	log "github.com/sirupsen/logrus"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -169,6 +171,29 @@ func (r *Runner) Start() error {
 	} else {
 		log.Infof("HAProxy version: %s", clusterMetadata.HAProxyVersion)
 	}
+	hasNP, hasNonNP := false, false
+	for _, cfg := range config.Cfg {
+		if cfg.ServiceType != "" && cfg.ServiceType != config.ServiceTypeNodePort {
+			return fmt.Errorf("unsupported serviceType %q, allowed values are \"\" and %q", cfg.ServiceType, config.ServiceTypeNodePort)
+		}
+		if cfg.ServiceType == config.ServiceTypeNodePort {
+			hasNP = true
+			if r.serviceMesh != "" {
+				return stderrors.New("serviceType nodeport is incompatible with service mesh mode")
+			}
+			if r.gatewayAPI {
+				return stderrors.New("serviceType nodeport is incompatible with gateway API mode")
+			}
+			if cfg.Termination != config.TerminationHTTP && cfg.Termination != config.TerminationPassthrough {
+				return fmt.Errorf("serviceType nodeport only supports http and passthrough terminations, got %s", cfg.Termination)
+			}
+		} else {
+			hasNonNP = true
+		}
+	}
+	if hasNP && hasNonNP {
+		return stderrors.New("mixing nodeport and non-nodeport service types in the same config is not supported")
+	}
 	if err := r.deployAssets(); err != nil {
 		return err
 	}
@@ -290,9 +315,29 @@ func (r *Runner) deployAssets() error {
 	if err != nil && !errors.IsAlreadyExists(err) {
 		return err
 	}
+	nodePort := hasNodePort()
+	if nodePort {
+		log.Info("NodePort service mode enabled")
+		service.Spec.Type = corev1.ServiceTypeNodePort
+	} else {
+		service.Spec.Type = corev1.ServiceTypeClusterIP
+	}
 	_, err = clientSet.CoreV1().Services(benchmarkNs.Name).Create(context.TODO(), &service, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) {
+	if errors.IsAlreadyExists(err) {
+		if err := clientSet.CoreV1().Services(benchmarkNs.Name).Delete(context.TODO(), service.Name, metav1.DeleteOptions{}); err != nil {
+			return err
+		}
+		if _, err := clientSet.CoreV1().Services(benchmarkNs.Name).Create(context.TODO(), &service, metav1.CreateOptions{}); err != nil {
+			return err
+		}
+	} else if err != nil {
 		return err
+	}
+	if nodePort {
+		// NodePort mode bypasses the ingress controller entirely — no Routes, Istio
+		// gateways, or Gateway API resources are needed. Start() validates that
+		// nodeport is not combined with service-mesh or gateway-api modes.
+		return nil
 	}
 	if !r.gatewayAPI {
 		for _, route := range routes {
@@ -429,6 +474,15 @@ func waitForDeployment(ns, deployment string, maxWaitTimeout time.Duration) erro
 		}
 	}
 	return err
+}
+
+func hasNodePort() bool {
+	for _, cfg := range config.Cfg {
+		if cfg.ServiceType == config.ServiceTypeNodePort {
+			return true
+		}
+	}
+	return false
 }
 
 func waitForGateway(ns, gateway string, maxWaitTimeout time.Duration) error {

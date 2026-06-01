@@ -17,6 +17,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -49,36 +50,12 @@ func runBenchmark(
 	var timeouts, httpErrors int64
 	var benchmarkResult []tools.Result
 	var clientPods []corev1.Pod
-	var ep string
-	var host string
-	if isGatewayAPIEnabled {
-		hr, err := hrClientSet.GatewayV1beta1().HTTPRoutes(routesNamespace).
-			Get(context.TODO(), serverName, metav1.GetOptions{})
-		if err != nil {
-			return benchmarkResult, err
-		}
-		host = string(hr.Spec.Hostnames[0])
-	} else {
-		r, err := orClientSet.RouteV1().Routes(routesNamespace).
-			Get(context.TODO(), fmt.Sprintf("%s-%s", serverName, cfg.Termination), metav1.GetOptions{})
-		if err != nil {
-			return benchmarkResult, err
-		}
-		host = r.Spec.Host
-	}
-	protocol := "http"
-	if cfg.Termination != "http" {
-		protocol = "https"
-	}
-
-	ep = fmt.Sprintf("%s://%v%v", protocol, host, cfg.Path)
 	allClientPods, err := clientSet.CoreV1().Pods(benchmarkNs.Name).List(context.TODO(), metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("app=%s", clientName),
 	})
 	if err != nil {
 		return benchmarkResult, err
 	}
-	// Filter out pods in terminating state from the list
 	for _, p := range allClientPods.Items {
 		if p.DeletionTimestamp == nil {
 			clientPods = append(clientPods, p)
@@ -86,6 +63,10 @@ func runBenchmark(
 		if len(clientPods) == int(cfg.Concurrency) {
 			break
 		}
+	}
+	podEndpoints, err := resolveEndpoints(cfg, clientPods, isGatewayAPIEnabled)
+	if err != nil {
+		return benchmarkResult, err
 	}
 	ts := time.Now().UTC()
 	for i := 1; i <= cfg.Samples; i++ {
@@ -98,14 +79,14 @@ func runBenchmark(
 			ClusterMetadata: clusterMetadata,
 			InfraMetrics:    make(map[string]float64),
 		}
-		result.Config.Tuning = currentTuning // It's useful to index the current tuning patch in the all benchmark's documents
+		result.Config.Tuning = currentTuning
 		log.Infof("Running sample %d/%d: %v", i, cfg.Samples, cfg.Duration)
 		errGroup := errgroup.Group{}
 		for _, pod := range clientPods {
 			for i := 0; i < cfg.Procs; i++ {
 				func(p corev1.Pod) {
 					errGroup.Go(func() error {
-						tool, err := tools.New(cfg, ep)
+						tool, err := tools.New(cfg, podEndpoints[p.Name])
 						if err != nil {
 							return err
 						}
@@ -128,22 +109,26 @@ func runBenchmark(
 		aggP95Latency += result.P95Latency
 		timeouts += result.Timeouts
 		httpErrors += result.HTTPErrors
-		elapsed := fmt.Sprintf("%ds", int(time.Since(sampleTs).Seconds()))
-		for field, query := range config.PrometheusQueries {
-			promQuery := strings.ReplaceAll(query, "ELAPSED", elapsed)
-			log.Debugf("Running query: %s", promQuery)
-			value, err := p.Query(promQuery, time.Time{}.UTC())
-			if err != nil {
-				log.Errorf("Query error: %v", err)
-				continue
-			}
-			data, ok := value.(model.Vector)
-			if !ok {
-				log.Errorf("Unsupported result format: %s", value.Type().String())
-				continue
-			}
-			for _, vector := range data {
-				result.InfraMetrics[field] = float64(vector.Value)
+		if cfg.ServiceType == config.ServiceTypeNodePort {
+			log.Debug("Skipping infrastructure metrics collection for NodePort service type")
+		} else {
+			elapsed := fmt.Sprintf("%ds", int(time.Since(sampleTs).Seconds()))
+			for field, query := range config.PrometheusQueries {
+				promQuery := strings.ReplaceAll(query, "ELAPSED", elapsed)
+				log.Debugf("Running query: %s", promQuery)
+				value, err := p.Query(promQuery, time.Time{}.UTC())
+				if err != nil {
+					log.Errorf("Query error: %v", err)
+					continue
+				}
+				data, ok := value.(model.Vector)
+				if !ok {
+					log.Errorf("Unsupported result format: %s", value.Type().String())
+					continue
+				}
+				for _, vector := range data {
+					result.InfraMetrics[field] = float64(vector.Value)
+				}
 			}
 		}
 		log.Infof("%s: Rps=%.0f avgLatency=%.0fms P95Latency=%.0fms", cfg.Termination, result.TotalAvgRps, result.AvgLatency/1e3, result.P95Latency/1e3)
@@ -215,6 +200,87 @@ func exec(ctx context.Context, tool tools.Tool, pod corev1.Pod, result *tools.Re
 	lock.Unlock()
 	log.Debugf("%s: avgRps: %.0f avgLatency: %.0f ms", podResult.Name, podResult.AvgRps, podResult.AvgLatency/1000)
 	return nil
+}
+
+func resolveEndpoints(cfg config.Config, clientPods []corev1.Pod, isGatewayAPIEnabled bool) (map[string]string, error) {
+	endpoints := make(map[string]string)
+	protocol := config.TerminationHTTP
+	if cfg.Termination != config.TerminationHTTP {
+		protocol = "https"
+	}
+	if cfg.ServiceType == config.ServiceTypeNodePort {
+		svc, err := clientSet.CoreV1().Services(benchmarkNs.Name).Get(context.TODO(), serverName, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		targetPort := config.TerminationHTTP
+		if cfg.Termination == config.TerminationPassthrough {
+			targetPort = "https"
+		}
+		var nodePort int32
+		for _, p := range svc.Spec.Ports {
+			if p.Name == targetPort {
+				nodePort = p.NodePort
+				break
+			}
+		}
+		if nodePort == 0 {
+			return nil, fmt.Errorf("no NodePort allocated for port %s", targetPort)
+		}
+		nodeIPs, err := getWorkerNodeIPs()
+		if err != nil {
+			return nil, err
+		}
+		if len(nodeIPs) == 0 {
+			return nil, errors.New("no worker node IPs found")
+		}
+		for i, pod := range clientPods {
+			ip := nodeIPs[i%len(nodeIPs)]
+			endpoints[pod.Name] = fmt.Sprintf("%s://%s:%d%s", protocol, ip, nodePort, cfg.Path)
+		}
+		log.Infof("NodePort %d, targeting %d worker nodes", nodePort, len(nodeIPs))
+	} else {
+		var host string
+		if isGatewayAPIEnabled {
+			hr, err := hrClientSet.GatewayV1beta1().HTTPRoutes(routesNamespace).
+				Get(context.TODO(), serverName, metav1.GetOptions{})
+			if err != nil {
+				return nil, err
+			}
+			host = string(hr.Spec.Hostnames[0])
+		} else {
+			r, err := orClientSet.RouteV1().Routes(routesNamespace).
+				Get(context.TODO(), fmt.Sprintf("%s-%s", serverName, cfg.Termination), metav1.GetOptions{})
+			if err != nil {
+				return nil, err
+			}
+			host = r.Spec.Host
+		}
+		ep := fmt.Sprintf("%s://%v%v", protocol, host, cfg.Path)
+		for _, pod := range clientPods {
+			endpoints[pod.Name] = ep
+		}
+	}
+	return endpoints, nil
+}
+
+func getWorkerNodeIPs() ([]string, error) {
+	nodes, err := clientSet.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{
+		LabelSelector: "node-role.kubernetes.io/worker,!node-role.kubernetes.io/infra",
+	})
+	if err != nil {
+		return nil, err
+	}
+	var ips []string
+	for _, node := range nodes.Items {
+		for _, addr := range node.Status.Addresses {
+			if addr.Type == corev1.NodeInternalIP {
+				ips = append(ips, addr.Address)
+				break
+			}
+		}
+	}
+	return ips, nil
 }
 
 func normalizeResults(result *tools.Result) {
