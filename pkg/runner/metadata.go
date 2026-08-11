@@ -27,7 +27,6 @@ import (
 )
 
 func getHAProxyVersion() (string, error) {
-	var stdout, stderr bytes.Buffer
 	podList, err := clientSet.CoreV1().Pods("openshift-ingress").List(context.TODO(),
 		metav1.ListOptions{
 			LabelSelector: "ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default",
@@ -37,22 +36,37 @@ func getHAProxyVersion() (string, error) {
 		return "", err
 	}
 	routerPod := podList.Items[0]
+	rpmCmd := []string{"bash", "-c", "rpm -qa | grep haproxy"}
+
+	// OCP 5.0+ deploys HAProxy as a sidecar container separate from the
+	// router controller. Check for HAProxy RPM in the sidecar first.
+	version, err := execInContainer(routerPod, "haproxy", rpmCmd)
+	if err == nil && version != "" {
+		return version, nil
+	}
+	log.Debugf("Failed to get HAProxy version from sidecar container, falling back to router container: %v", err)
+
+	// Fall back to the monolithic router container (OCP 4.x).
+	return execInContainer(routerPod, "router", rpmCmd)
+}
+
+func execInContainer(pod corev1.Pod, container string, command []string) (string, error) {
+	var stdout, stderr bytes.Buffer
 	req := clientSet.CoreV1().RESTClient().Post().
 		Resource("pods").
-		Name(routerPod.Name).
-		Namespace(routerPod.Namespace).
+		Name(pod.Name).
+		Namespace(pod.Namespace).
 		SubResource("exec")
 	req.VersionedParams(&corev1.PodExecOptions{
-		Container: "router",
+		Container: container,
 		Stdin:     false,
 		Stdout:    true,
 		Stderr:    true,
-		Command:   []string{"bash", "-c", "rpm -qa | grep haproxy"},
+		Command:   command,
 		TTY:       false,
 	}, scheme.ParameterCodec)
 	exec, err := remotecommand.NewSPDYExecutor(restConfig, "POST", req.URL())
 	if err != nil {
-		log.Error(err.Error())
 		return "", err
 	}
 	err = exec.StreamWithContext(context.TODO(), remotecommand.StreamOptions{
@@ -62,5 +76,5 @@ func getHAProxyVersion() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimRight(stdout.String(), "\n"), err
+	return strings.TrimRight(stdout.String(), "\n"), nil
 }
